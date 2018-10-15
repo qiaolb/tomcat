@@ -73,44 +73,6 @@ RUN set -eux; \
 	command -v gpgconf && gpgconf --kill all || :; \
 	rm -rf "$GNUPGHOME"; \
 	\
-	nativeBuildDir="$(mktemp -d)"; \
-	tar -xvf bin/tomcat-native.tar.gz -C "$nativeBuildDir" --strip-components=1; \
-	apk add --no-cache --virtual .native-build-deps \
-		apr-dev \
-		coreutils \
-		dpkg-dev dpkg \
-		gcc \
-		libc-dev \
-		make \
-		"openjdk${JAVA_VERSION%%[-~bu]*}"="$JAVA_ALPINE_VERSION" \
-		openssl-dev \
-	; \
-	( \
-		export CATALINA_HOME="$PWD"; \
-		cd "$nativeBuildDir/native"; \
-		gnuArch="$(dpkg-architecture --query DEB_BUILD_GNU_TYPE)"; \
-		./configure \
-			--build="$gnuArch" \
-			--libdir="$TOMCAT_NATIVE_LIBDIR" \
-			--prefix="$CATALINA_HOME" \
-			--with-apr="$(which apr-1-config)" \
-			--with-java-home="$(docker-java-home)" \
-			--with-ssl=yes; \
-		make -j "$(nproc)"; \
-		make install; \
-	); \
-	rm -rf "$nativeBuildDir"; \
-	rm bin/tomcat-native.tar.gz; \
-	\
-	runDeps="$( \
-		scanelf --needed --nobanner --format '%n#p' --recursive "$TOMCAT_NATIVE_LIBDIR" \
-			| tr ',' '\n' \
-			| sort -u \
-			| awk 'system("[ -e /usr/local/lib/" $1 " ]") == 0 { next } { print "so:" $1 }' \
-	)"; \
-	apk add --virtual .tomcat-native-rundeps $runDeps; \
-	apk del .fetch-deps .native-build-deps; \
-	\
 # sh removes env vars it doesn't support (ones with periods)
 # https://github.com/docker-library/tomcat/issues/77
 	apk add --no-cache bash; \
@@ -121,15 +83,7 @@ RUN set -eux; \
 	chmod -R +rX .; \
 	chmod 777 logs work
 
-# verify Tomcat Native is working properly
-RUN set -e \
-	&& nativeLines="$(catalina.sh configtest 2>&1)" \
-	&& nativeLines="$(echo "$nativeLines" | grep 'Apache Tomcat Native')" \
-	&& nativeLines="$(echo "$nativeLines" | sort -u)" \
-	&& if ! echo "$nativeLines" | grep 'INFO: Loaded APR based Apache Tomcat Native library' >&2; then \
-		echo >&2 "$nativeLines"; \
-		exit 1; \
-	fi
+
 
 EXPOSE 8080
 CMD ["catalina.sh", "run"]
