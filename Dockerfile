@@ -1,11 +1,13 @@
 FROM frolvlad/alpine-oraclejre8
 
-ENV JRE_HOME /usr/lib/jvm/default-jvm/jre
 ENV CATALINA_HOME /usr/local/tomcat
 ENV PATH $CATALINA_HOME/bin:$PATH
 RUN mkdir -p "$CATALINA_HOME"
 WORKDIR $CATALINA_HOME
 
+# let "Tomcat Native" live somewhere isolated
+ENV TOMCAT_NATIVE_LIBDIR $CATALINA_HOME/native-jni-lib
+ENV LD_LIBRARY_PATH ${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$TOMCAT_NATIVE_LIBDIR
 
 # see https://www.apache.org/dist/tomcat/tomcat-$TOMCAT_MAJOR/KEYS
 # see also "update.sh" (https://github.com/docker-library/tomcat/blob/master/update.sh)
@@ -13,7 +15,7 @@ ENV GPG_KEYS 05AB33110949707C93A279E3D3EFE6B686867BA6 07E48665A34DCAFAE522E5E626
 
 ENV TOMCAT_MAJOR 8
 ENV TOMCAT_VERSION 8.5.37
-ENV TOMCAT_SHA512 131dfe23918f33fb24cefa7a03286c786304151f95f7bc0b6e34dfb6b0d1e65fe606e48b85c60c8a522938d1a01a36b540e69c94f36973321858e229731cda82
+ENV TOMCAT_SHA512 be6d6df8b49a760b2e181d4a45d8e6dc7bba5ef2ec6a000f8562cf5f34db5b7fac300cba65bca782bfd25a9f9d8d4a48625f1ad046115c1d6629ea5f210a2718
 
 ENV TOMCAT_TGZ_URLS \
 # https://issues.apache.org/jira/browse/INFRA-8753?focusedCommentId=14735394#comment-14735394
@@ -41,7 +43,7 @@ RUN set -eux; \
 	\
 	export GNUPGHOME="$(mktemp -d)"; \
 	for key in $GPG_KEYS; do \
-		gpg --keyserver ha.pool.sks-keyservers.net --recv-keys "$key"; \
+		gpg --batch --keyserver ha.pool.sks-keyservers.net --recv-keys "$key"; \
 	done; \
 	\
 	success=; \
@@ -71,6 +73,44 @@ RUN set -eux; \
 	command -v gpgconf && gpgconf --kill all || :; \
 	rm -rf "$GNUPGHOME"; \
 	\
+	nativeBuildDir="$(mktemp -d)"; \
+	tar -xvf bin/tomcat-native.tar.gz -C "$nativeBuildDir" --strip-components=1; \
+	apk add --no-cache --virtual .native-build-deps \
+		apr-dev \
+		coreutils \
+		dpkg-dev dpkg \
+		gcc \
+		libc-dev \
+		make \
+		"openjdk${JAVA_VERSION%%[-~bu]*}"="$JAVA_ALPINE_VERSION" \
+		openssl-dev \
+	; \
+	( \
+		export CATALINA_HOME="$PWD"; \
+		cd "$nativeBuildDir/native"; \
+		gnuArch="$(dpkg-architecture --query DEB_BUILD_GNU_TYPE)"; \
+		./configure \
+			--build="$gnuArch" \
+			--libdir="$TOMCAT_NATIVE_LIBDIR" \
+			--prefix="$CATALINA_HOME" \
+			--with-apr="$(which apr-1-config)" \
+			--with-java-home="$(docker-java-home)" \
+			--with-ssl=yes; \
+		make -j "$(nproc)"; \
+		make install; \
+	); \
+	rm -rf "$nativeBuildDir"; \
+	rm bin/tomcat-native.tar.gz; \
+	\
+	runDeps="$( \
+		scanelf --needed --nobanner --format '%n#p' --recursive "$TOMCAT_NATIVE_LIBDIR" \
+			| tr ',' '\n' \
+			| sort -u \
+			| awk 'system("[ -e /usr/local/lib/" $1 " ]") == 0 { next } { print "so:" $1 }' \
+	)"; \
+	apk add --virtual .tomcat-native-rundeps $runDeps; \
+	apk del .fetch-deps .native-build-deps; \
+	\
 # sh removes env vars it doesn't support (ones with periods)
 # https://github.com/docker-library/tomcat/issues/77
 	apk add --no-cache bash; \
@@ -81,7 +121,15 @@ RUN set -eux; \
 	chmod -R +rX .; \
 	chmod 777 logs work
 
-
+# verify Tomcat Native is working properly
+RUN set -e \
+	&& nativeLines="$(catalina.sh configtest 2>&1)" \
+	&& nativeLines="$(echo "$nativeLines" | grep 'Apache Tomcat Native')" \
+	&& nativeLines="$(echo "$nativeLines" | sort -u)" \
+	&& if ! echo "$nativeLines" | grep 'INFO: Loaded APR based Apache Tomcat Native library' >&2; then \
+		echo >&2 "$nativeLines"; \
+		exit 1; \
+	fi
 
 EXPOSE 8080
 CMD ["catalina.sh", "run"]
