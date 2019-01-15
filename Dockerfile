@@ -1,5 +1,6 @@
 FROM frolvlad/alpine-oraclejre8
 
+ENV JRE_HOME /usr/lib/jvm/default-jvm/jre
 ENV CATALINA_HOME /usr/local/tomcat
 ENV PATH $CATALINA_HOME/bin:$PATH
 RUN mkdir -p "$CATALINA_HOME"
