@@ -1,4 +1,4 @@
-FROM oracle-serverjre-8
+FROM frolvlad/alpine-oraclejre8
 
 ENV JRE_HOME /usr/lib/jvm/default-jvm/jre
 ENV CATALINA_HOME /usr/local/tomcat
